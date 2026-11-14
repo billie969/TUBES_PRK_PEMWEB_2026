@@ -145,6 +145,13 @@ $requestedReportPage = $_GET['reportPage'] ?? null;
 if (is_string($requestedReportPage) && ctype_digit($requestedReportPage)) {
     $reportPage = max(1, (int) $requestedReportPage);
 }
+$adminReturnParameters = ['reportPage' => (string) $reportPage];
+foreach (['search', 'status', 'category', 'dateFrom', 'dateTo'] as $filterName) {
+    $filterValue = $_GET[$filterName] ?? null;
+    if (is_string($filterValue) && $filterValue !== '') {
+        $adminReturnParameters[$filterName] = $filterValue;
+    }
+}
 $user = current_user();
 $db = null;
 
@@ -166,7 +173,7 @@ try {
                 if (!is_string($password) || $password === '') {
                     throw new InputError('NPM atau kata sandi tidak valid.', 401);
                 }
-                $statement = $db->prepare('SELECT id, nim, full_name, role, password_hash FROM users WHERE nim = :nim');
+                $statement = $db->prepare('SELECT id, nim, full_name, role, user_type, password_hash FROM users WHERE nim = :nim');
                 $statement->execute(['nim' => $nim]);
                 $account = $statement->fetch();
                 if (!is_array($account) || !password_verify($password, (string) $account['password_hash'])) {
@@ -178,6 +185,7 @@ try {
                     'nim' => $account['nim'],
                     'fullName' => $account['full_name'],
                     'role' => $account['role'],
+                    'userType' => $account['user_type'] ?? 'mahasiswa',
                 ];
                 unset($_SESSION['_csrf']);
                 redirect($account['role'] === 'admin' ? 'admin' : 'dashboard');
@@ -187,14 +195,15 @@ try {
                 $registration = validate_registration($_POST);
                 try {
                     $statement = $db->prepare(
-                        "INSERT INTO users (nim, full_name, password_hash)
-                         VALUES (:nim, :full_name, :password_hash)
-                         RETURNING id, nim, full_name, role",
+                        "INSERT INTO users (nim, full_name, password_hash, user_type)
+                         VALUES (:nim, :full_name, :password_hash, :user_type)
+                         RETURNING id, nim, full_name, role, user_type",
                     );
                     $statement->execute([
                         'nim' => $registration['nim'],
                         'full_name' => $registration['fullName'],
                         'password_hash' => password_hash($registration['password'], PASSWORD_BCRYPT, ['cost' => 12]),
+                        'user_type' => $registration['userType'] ?? 'mahasiswa',
                     ]);
                     $account = $statement->fetch();
                 } catch (PDOException $databaseError) {
@@ -209,6 +218,7 @@ try {
                     'nim' => $account['nim'],
                     'fullName' => $account['full_name'],
                     'role' => $account['role'],
+                    'userType' => $account['user_type'] ?? ($registration['userType'] ?? 'mahasiswa'),
                 ];
                 unset($_SESSION['_csrf']);
                 redirect('dashboard');
@@ -289,23 +299,47 @@ try {
                 $user = require_user('admin');
                 $decision = validate_decision($_POST);
                 $reportId = positive_id($_POST['reportId'] ?? null, 'ID laporan');
-                $statement = $db->prepare(
-                    "UPDATE reports
-                     SET status = :status, decision_note = NULLIF(:note, ''),
-                         decided_by = :decided_by, decided_at = NOW()
-                     WHERE id = :id AND status = 'pending'",
-                );
-                $statement->execute([
-                    'status' => $decision['decision'],
-                    'note' => $decision['note'],
-                    'decided_by' => (string) $user['id'],
-                    'id' => $reportId,
-                ]);
-                if ($statement->rowCount() !== 1) {
-                    throw new InputError('Laporan tidak ditemukan atau sudah diproses.', 409);
+                $db->beginTransaction();
+                try {
+                    $statement = $db->prepare(
+                        "UPDATE reports
+                         SET status = :status, decision_note = :note,
+                             decided_by = :decided_by, decided_at = NOW()
+                         WHERE id = :id AND status = 'pending'
+                         RETURNING decided_at",
+                    );
+                    $statement->execute([
+                        'status' => $decision['decision'],
+                        'note' => $decision['note'],
+                        'decided_by' => (string) $user['id'],
+                        'id' => $reportId,
+                    ]);
+                    $decidedAt = $statement->fetchColumn();
+                    if ($decidedAt === false) {
+                        throw new InputError('Laporan tidak ditemukan atau sudah diproses.', 409);
+                    }
+
+                    $statement = $db->prepare(
+                        'INSERT INTO report_decision_logs
+                         (report_id, decision, decision_note, decided_by, decided_at)
+                         VALUES (:report_id, :decision, :decision_note, :decided_by, :decided_at)',
+                    );
+                    $statement->execute([
+                        'report_id' => $reportId,
+                        'decision' => $decision['decision'],
+                        'decision_note' => $decision['note'],
+                        'decided_by' => (string) $user['id'],
+                        'decided_at' => $decidedAt,
+                    ]);
+                    $db->commit();
+                } catch (Throwable $decisionError) {
+                    if ($db->inTransaction()) {
+                        $db->rollBack();
+                    }
+                    throw $decisionError;
                 }
                 flash('success', 'Keputusan laporan berhasil disimpan.');
-                redirect('admin', ['reportPage' => (string) $reportPage]);
+                redirect('admin', $adminReturnParameters);
 
             case 'announcement-create':
                 $user = require_user('admin');
@@ -328,7 +362,7 @@ try {
                     'created_by' => (string) $user['id'],
                 ]);
                 flash('success', 'Pengumuman berhasil disimpan.');
-                redirect('admin', ['reportPage' => (string) $reportPage]);
+                redirect('admin', $adminReturnParameters);
 
             case 'announcement-edit':
                 require_user('admin');
@@ -358,7 +392,7 @@ try {
                     throw new InputError('Pengumuman tidak ditemukan atau tidak berubah.', 404);
                 }
                 flash('success', 'Pengumuman berhasil diperbarui.');
-                redirect('admin');
+                redirect('admin', $adminReturnParameters);
 
             case 'announcement-toggle':
                 require_user('admin');
@@ -384,7 +418,7 @@ try {
                     throw new InputError('Pengumuman tidak ditemukan.', 404);
                 }
                 flash('success', 'Status pengumuman berhasil diperbarui.');
-                redirect('admin', ['reportPage' => (string) $reportPage]);
+                redirect('admin', $adminReturnParameters);
 
             case 'announcement-delete':
                 require_user('admin');
@@ -395,7 +429,7 @@ try {
                     throw new InputError('Pengumuman tidak ditemukan.', 404);
                 }
                 flash('success', 'Pengumuman berhasil dihapus.');
-                redirect('admin', ['reportPage' => (string) $reportPage]);
+                redirect('admin', $adminReturnParameters);
 
             default:
                 throw new InputError('Permintaan tidak dikenal.');
@@ -442,9 +476,19 @@ try {
         } catch (InputError $filterError) {
             $error = $filterError->getMessage();
         }
-        $reports = report_rows($db, (string) $user['id'], true, $reportFilters);
+        $reportCount = report_count($db, $reportFilters);
+        $pagination = report_pagination($reportCount, $reportPage, $reportPageSize);
+        $reportPage = $pagination['page'];
+        $reportPageCount = $pagination['pageCount'];
+        $reports = report_rows(
+            $db,
+            (string) $user['id'],
+            true,
+            $reportFilters,
+            $reportPageSize,
+            $pagination['offset'],
+        );
         $reportStatistics = report_statistics($db);
-        $reportCount = $reportStatistics['total'];
         $pendingCount = $reportStatistics['pending'];
         $announcements = $db->query(
             'SELECT id, title, body, category, is_pinned, is_published,
@@ -526,9 +570,24 @@ if (
     && $db instanceof PDO
 ) {
     try {
-        $reports = report_rows($db, (string) $user['id'], true, $reportFilters);
+        try {
+            $reportFilters = validate_report_filters($_GET);
+        } catch (InputError $filterError) {
+            $error = $filterError->getMessage();
+        }
+        $reportCount = report_count($db, $reportFilters);
+        $pagination = report_pagination($reportCount, $reportPage, $reportPageSize);
+        $reportPage = $pagination['page'];
+        $reportPageCount = $pagination['pageCount'];
+        $reports = report_rows(
+            $db,
+            (string) $user['id'],
+            true,
+            $reportFilters,
+            $reportPageSize,
+            $pagination['offset'],
+        );
         $reportStatistics = report_statistics($db);
-        $reportCount = $reportStatistics['total'];
         $announcements = $db->query(
             'SELECT id, title, body, category, is_pinned, is_published,
                     published_at, expires_at, updated_at

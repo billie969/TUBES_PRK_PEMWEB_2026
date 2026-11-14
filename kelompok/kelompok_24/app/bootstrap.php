@@ -212,6 +212,9 @@ function validate_registration(array $input): array
 {
     $fullName = required_text($input['fullName'] ?? null, 'Nama lengkap', 120);
     $nim = normalize_nim($input['nim'] ?? null);
+    $userTypeRaw = strtolower(trim((string) ($input['user_type'] ?? $input['userRole'] ?? 'mahasiswa')));
+    $validUserTypes = ['mahasiswa', 'dosen', 'civitas'];
+    $userType = in_array($userTypeRaw, $validUserTypes, true) ? $userTypeRaw : 'mahasiswa';
     $password = $input['password'] ?? null;
     if (!is_string($password) || strlen($password) < 8 || strlen($password) > 72) {
         throw new InputError('Kata sandi harus memiliki 8 sampai 72 byte.');
@@ -219,7 +222,7 @@ function validate_registration(array $input): array
     if (!is_string($input['passwordConfirm'] ?? null) || !hash_equals($password, $input['passwordConfirm'])) {
         throw new InputError('Konfirmasi kata sandi tidak cocok.');
     }
-    return ['fullName' => $fullName, 'nim' => $nim, 'password' => $password];
+    return ['fullName' => $fullName, 'nim' => $nim, 'password' => $password, 'userType' => $userType];
 }
 
 function validate_report(array $input): array
@@ -407,49 +410,97 @@ function auth_rate_limit(): void
     }
 }
 
-function report_rows(PDO $db, string $userId, bool $admin = false, array $filters = []): array
+function report_filter_conditions(array $filters): array
 {
+    $conditions = [];
+    $parameters = [];
+    if (($filters['search'] ?? '') !== '') {
+        $conditions[] = '(r.title ILIKE :title_search OR r.chronology ILIKE :chronology_search)';
+        $searchPattern = '%' . $filters['search'] . '%';
+        $parameters['title_search'] = $searchPattern;
+        $parameters['chronology_search'] = $searchPattern;
+    }
+    if (($filters['status'] ?? '') !== '') {
+        $conditions[] = 'r.status = :status';
+        $parameters['status'] = $filters['status'];
+    }
+    if (($filters['category'] ?? '') !== '') {
+        $conditions[] = 'r.category = :category';
+        $parameters['category'] = $filters['category'];
+    }
+    if (($filters['dateFrom'] ?? null) !== null) {
+        $conditions[] = 'r.created_at >= CAST(:date_from AS DATE)';
+        $parameters['date_from'] = $filters['dateFrom'];
+    }
+    if (($filters['dateTo'] ?? null) !== null) {
+        $conditions[] = 'r.created_at < CAST(:date_to AS DATE) + INTERVAL \'1 day\'';
+        $parameters['date_to'] = $filters['dateTo'];
+    }
+
+    return [$conditions, $parameters];
+}
+
+function report_count(PDO $db, array $filters = []): int
+{
+    [$conditions, $parameters] = report_filter_conditions($filters);
+    $sql = 'SELECT COUNT(*) FROM reports r';
+    if ($conditions !== []) {
+        $sql .= ' WHERE ' . implode(' AND ', $conditions);
+    }
+
+    $statement = $db->prepare($sql);
+    $statement->execute($parameters);
+    return (int) $statement->fetchColumn();
+}
+
+function report_pagination(int $totalCount, int $requestedPage, int $pageSize): array
+{
+    if ($totalCount < 0 || $requestedPage < 1 || $pageSize < 1) {
+        throw new InvalidArgumentException('Nilai paginasi laporan tidak valid.');
+    }
+
+    $pageCount = max(1, intdiv($totalCount, $pageSize) + ($totalCount % $pageSize === 0 ? 0 : 1));
+    $page = min($requestedPage, $pageCount);
+
+    return [
+        'page' => $page,
+        'pageCount' => $pageCount,
+        'offset' => ($page - 1) * $pageSize,
+    ];
+}
+
+function report_rows(
+    PDO $db,
+    string $userId,
+    bool $admin = false,
+    array $filters = [],
+    ?int $limit = null,
+    int $offset = 0,
+): array {
     $sql = "SELECT r.*, CASE WHEN r.is_anonymous THEN NULL ELSE u.full_name END AS submitter_name,
             CASE WHEN r.is_anonymous THEN NULL ELSE u.nim END AS submitter_nim,
             reviewer.full_name AS decided_by_name
             FROM reports r
             JOIN users u ON u.id = r.user_id
             LEFT JOIN users reviewer ON reviewer.id = r.decided_by";
-    $conditions = [];
-    $parameters = [];
-    if (!$admin) {
-        $conditions[] = 'r.user_id = :user_id';
-        $parameters['user_id'] = $userId;
+    if ($admin) {
+        [$conditions, $parameters] = report_filter_conditions($filters);
     } else {
-        if (($filters['search'] ?? '') !== '') {
-            $conditions[] = '(r.title ILIKE :title_search OR r.chronology ILIKE :chronology_search)';
-            $searchPattern = '%' . $filters['search'] . '%';
-            $parameters['title_search'] = $searchPattern;
-            $parameters['chronology_search'] = $searchPattern;
-        }
-        if (($filters['status'] ?? '') !== '') {
-            $conditions[] = 'r.status = :status';
-            $parameters['status'] = $filters['status'];
-        }
-        if (($filters['category'] ?? '') !== '') {
-            $conditions[] = 'r.category = :category';
-            $parameters['category'] = $filters['category'];
-        }
-        if (($filters['dateFrom'] ?? null) !== null) {
-            $conditions[] = 'r.created_at >= CAST(:date_from AS DATE)';
-            $parameters['date_from'] = $filters['dateFrom'];
-        }
-        if (($filters['dateTo'] ?? null) !== null) {
-            $conditions[] = 'r.created_at < CAST(:date_to AS DATE) + INTERVAL \'1 day\'';
-            $parameters['date_to'] = $filters['dateTo'];
-        }
+        $conditions = ['r.user_id = :user_id'];
+        $parameters = ['user_id' => $userId];
     }
     if ($conditions !== []) {
         $sql .= ' WHERE ' . implode(' AND ', $conditions);
     }
     $sql .= $admin
-        ? " ORDER BY CASE r.status WHEN 'pending' THEN 0 ELSE 1 END, r.created_at ASC"
+        ? " ORDER BY CASE r.status WHEN 'pending' THEN 0 ELSE 1 END, r.created_at ASC, r.id ASC"
         : ' ORDER BY r.created_at DESC';
+    if ($limit !== null) {
+        if ($limit < 1 || $offset < 0) {
+            throw new InvalidArgumentException('Batas paginasi laporan tidak valid.');
+        }
+        $sql .= sprintf(' LIMIT %d OFFSET %d', $limit, $offset);
+    }
 
     $statement = $db->prepare($sql);
     $statement->execute($parameters);
@@ -498,7 +549,26 @@ function report_rows(PDO $db, string $userId, bool $admin = false, array $filter
         }
     }
 
+    $decisionHistoryByReport = [];
+    if ($admin && $reports !== []) {
+        $decisionStatement = $db->prepare(
+            'SELECT d.report_id, d.decision, d.decision_note, d.decided_at,
+                    reviewer.full_name AS decided_by_name
+             FROM report_decision_logs d
+             JOIN users reviewer ON reviewer.id = d.decided_by
+             WHERE d.report_id IN (' . implode(', ', $placeholders) . ')
+             ORDER BY d.report_id, d.decided_at DESC, d.id DESC',
+        );
+        $decisionStatement->execute($parameters);
+        foreach ($decisionStatement->fetchAll() as $decisionRecord) {
+            $decisionHistoryByReport[(string) $decisionRecord['report_id']][] = $decisionRecord;
+        }
+    }
+
     foreach ($reports as &$report) {
+        if ($admin) {
+            $report['decision_history'] = $decisionHistoryByReport[(string) $report['id']] ?? [];
+        }
         $report['attachments'] = $attachmentsByReport[(string) $report['id']] ?? [];
     }
     unset($report);

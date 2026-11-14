@@ -3,7 +3,7 @@
 
 ADVOKITA adalah portal pengaduan dan bantuan hukum mahasiswa berbasis web. Sistem ini memungkinkan mahasiswa membuat akun, mengajukan laporan secara transparan maupun anonim, mengunggah bukti dokumen/foto, dan memantau status perkembangan penanganan kasus. Di sisi pengelola, admin kampus dapat meninjau kronologi laporan, memberikan catatan keputusan (menyetujui/menolak), serta mempublikasikan pengumuman resmi.
 
-Aplikasi dibangun menggunakan **PHP Native (8.2+)**, **PostgreSQL (PDO_PGSQL)**, dan antarmuka **HTML + Bootstrap 5 CSS-only (100% tanpa JavaScript)** sesuai standar keamanan dan aksesibilitas kampus.
+Aplikasi dibangun menggunakan **PHP Native (8.2+)**, **PostgreSQL (PDO_PGSQL)**, dan antarmuka **HTML + Bootstrap 5**. JavaScript ringan dipakai untuk dialog moderasi dan konfirmasi tindakan di panel admin; validasi, otorisasi, dan perubahan data tetap ditangani di server.
 
 ---
 
@@ -29,7 +29,7 @@ Aplikasi dibangun menggunakan **PHP Native (8.2+)**, **PostgreSQL (PDO_PGSQL)**,
   - Mengonfigurasi otomatisasi deployment kontainer Docker dan runner environment server.
 - **Berkas yang Dibuat / Dikelola:**
   - `app/bootstrap.php` *(Koneksi database PDO, inisialisasi sesi, proteksi CSRF, helper keamanan)*
-  - `database/schema.sql` *(Struktur tabel users, reports, report_attachments, announcements, auth_attempts)*
+  - `database/schema.sql` *(Struktur tabel users, reports, report_attachments, report_decision_logs, announcements, auth_attempts)*
   - `Dockerfile` & `.dockerignore` *(Konfigurasi kontainer PHP 8.2 Alpine & ekstensi pdo_pgsql)*
   - `composer.json` *(Deklarasi dependensi PHP & platform extensions)*
   - `bin/setup-database.php` & `bin/create-admin.php` *(CLI migrasi tabel & pembuatan akun admin)*
@@ -44,8 +44,10 @@ Aplikasi dibangun menggunakan **PHP Native (8.2+)**, **PostgreSQL (PDO_PGSQL)**,
   - Mengimplementasikan alur moderasi laporan: peninjauan laporan pending, pengisian catatan pertimbangan hukum, dan pembaruan status laporan (Disetujui/Ditolak).
   - Mengembangkan sistem CRUD publikasi pengumuman informasi kampus untuk ditampilkan pada beranda mahasiswa.
 - **Berkas yang Dibuat / Dikelola:**
-  - `templates/pages/admin.php` *(Antarmuka dashboard admin, tabel rekap laporan, modal keputusan, form pengumuman)*
-  - `public/index.php` *(Controller logika POST action: `decision`, `announcement-create`, `announcement-toggle`, `announcement-delete`)*
+  - `templates/pages/admin.php` *(Panel moderasi laporan, riwayat audit keputusan, dan pengelolaan pengumuman)*
+  - `public/index.php` *(Controller POST action `decision`, `announcement-create`, `announcement-edit`, `announcement-toggle`, dan `announcement-delete`; penyimpanan keputusan beserta log audit)*
+  - `app/bootstrap.php` *(Validasi keputusan dan pemuatan riwayat audit untuk panel admin)*
+  - `database/schema.sql` dan `database/migrations/20261112_report_decision_audit.sql` *(Struktur tabel log keputusan dan migrasi data keputusan yang sudah ada)*
 
 ---
 
@@ -53,10 +55,11 @@ Aplikasi dibangun menggunakan **PHP Native (8.2+)**, **PostgreSQL (PDO_PGSQL)**,
 - **Fokus:** *Backend & Frontend: Modul Formulir Pengaduan & Penanganan Berkas Bukti*
 - **Rincian Pekerjaan:**
   - Merancang antarmuka formulir pengaduan hukum dengan input dinamis (kategori kasus, tanggal insiden, kronologi kejadian, dan saklar privasi anonim).
-  - Mengembangkan logika pemrosesan upload lampiran bukti: validasi tipe konten MIME di sisi server (PDF, JPG, PNG), pembatasan ukuran berkas (maksimal 10 MB), dan penyimpanan bukti terenkripsi secara privat di luar document root.
+  - Mengembangkan logika pemrosesan upload lampiran bukti: validasi tipe konten MIME di sisi server (PDF, JPG, PNG), pembatasan ukuran berkas (maksimal 10 MB), penyimpanan secara privat di luar document root, dan kontrol akses unduhan di server.
 - **Berkas yang Dibuat / Dikelola:**
   - `templates/pages/report.php` *(Antarmuka formulir pengaduan, pemilihan kategori, kronologi, saklar anonim)*
-  - `public/index.php` *(Fungsi validasi `validate_report()`, fungsi pemrosesan berkas `save_uploaded_attachment()`, dan proteksi folder upload)*
+  - `app/bootstrap.php` *(Validasi data laporan melalui `validate_report()`)*
+  - `public/index.php` *(Pemrosesan upload melalui `save_uploaded_attachment()`, pengiriman lampiran melalui `send_attachment()`, dan proteksi folder upload)*
 
 ---
 
@@ -70,7 +73,8 @@ Aplikasi dibangun menggunakan **PHP Native (8.2+)**, **PostgreSQL (PDO_PGSQL)**,
   - `templates/pages/dashboard.php` *(Antarmuka beranda mahasiswa, banner informasi pengaduan, dan feed pengumuman)*
   - `templates/pages/history.php` *(Antarmuka daftar riwayat pengaduan mahasiswa beserta badge status)*
   - `templates/pages/detail.php` *(Antarmuka rincian kronologi laporan, catatan putusan admin, dan daftar bukti)*
-  - `public/index.php` *(Controller query riwayat laporan `report_rows()`, detail kasus `find_report()`, dan fungsi pengiriman berkas `send_attachment()`)*
+  - `app/bootstrap.php` *(Query riwayat laporan `report_rows()` dan detail kasus `find_report()`)*
+  - `public/index.php` *(Rute dashboard, riwayat, detail kasus, dan endpoint pengiriman lampiran `send_attachment()`)*
 
 ---
 
@@ -79,7 +83,7 @@ Aplikasi dibangun menggunakan **PHP Native (8.2+)**, **PostgreSQL (PDO_PGSQL)**,
 - **Rincian Pekerjaan:**
   - Merancang kerangka layout aplikasi bersama (header desktop responsif, mobile bottom navigation bar, alert notifikasi).
   - Mengimplementasikan seluruh modul autentikasi pengguna: halaman pendaftaran akun mahasiswa, halaman login, hashing kata sandi (`bcrypt`), pembatasan percobaan login (rate limiting), dan rotasi sesi.
-  - Mengembangkan sistem desain visual CSS murni (warna crimson tema kampus, tipografi, card elevation, dan formulir tanpa ketergantungan JavaScript).
+  - Mengembangkan sistem desain visual CSS (warna crimson tema kampus, tipografi, card elevation, dan formulir autentikasi tanpa ketergantungan JavaScript).
 - **Berkas yang Dibuat / Dikelola:**
   - `templates/layout.php` *(Kerangka HTML bersama, navbar desktop, bottom navigation mobile, container alert flash message)*
   - `templates/pages/login.php` & `templates/pages/register.php` *(Antarmuka login dan registrasi mahasiswa)*
@@ -145,8 +149,8 @@ Server web harus memakai `public/` sebagai document root. Kredensial database di
 - **Pengaduan:** judul, kategori, tanggal kejadian, kronologi, pilihan anonim, dan lampiran opsional.
 - **Lampiran:** hanya PDF/JPG/PNG hingga 10 MB. PHP memeriksa MIME dari isi berkas; unduhan hanya tersedia bagi pemilik laporan atau admin.
 - **Pemantauan laporan:** dashboard, riwayat, detail, status, dan catatan keputusan.
-- **Administrasi:** admin menerima laporan, menyetujui/menolak laporan pending dengan catatan, dan mengelola pengumuman.
-- **Tanpa JavaScript:** setiap aksi dikirim melalui form HTML biasa dan ditangani di server. Navigasi halaman, validasi, dan pembaruan konten tidak membutuhkan skrip browser.
+- **Administrasi:** admin menerima laporan, menyetujui/menolak laporan pending dengan catatan, melihat riwayat audit keputusan, dan mengelola pengumuman.
+- **JavaScript terbatas pada UI:** dialog moderasi dan konfirmasi tindakan memakai skrip browser; seluruh validasi, otorisasi, dan pemrosesan data tetap dilakukan di server melalui form.
 
 ---
 
@@ -185,7 +189,7 @@ Agar batas lampiran aplikasi 10 MB dapat dipenuhi, konfigurasi PHP/web server ha
    ```bash
    php bin/setup-database.php
    ```
-  Skrip ini menerapkan `database/schema.sql` dan migration di `database/migrations/` secara berurutan. Migration metadata pengumuman menambah kategori, pin, dan tanggal berakhir. Tinjau migration sebelum menjalankannya pada database produksi.
+  Skrip ini menerapkan `database/schema.sql` dan migration di `database/migrations/` secara berurutan. Migration metadata pengumuman menambah kategori, pin, dan tanggal berakhir. Migration audit keputusan membuat tabel riwayat dan menyalin keputusan terakhir dari laporan yang sudah diproses; perubahan sebelum riwayat ini tersedia tidak dapat dipulihkan. Tinjau migration sebelum menjalankannya pada database produksi.
 5. Buat akun Admin pertama:
    ```bash
    php bin/create-admin.php
@@ -215,7 +219,7 @@ php tests/validation.php
 php -l public/index.php
 ```
 
-Uji alur secara manual tanpa JavaScript: registrasi/login, pengajuan laporan dengan dan tanpa bukti, akses pemilik terhadap detail/lampiran, moderasi admin, serta pembuatan/publikasi/penghapusan pengumuman.
+Uji alur secara manual: registrasi/login, pengajuan laporan dengan dan tanpa bukti, akses pemilik terhadap detail/lampiran, moderasi admin dan riwayat keputusannya, serta pembuatan/publikasi/penghapusan pengumuman.
 
 ---
 
@@ -227,4 +231,4 @@ Uji alur secara manual tanpa JavaScript: registrasi/login, pengajuan laporan den
 - Periksa otorisasi dan kepemilikan laporan pada tiap operasi detail/unduh lampiran.
 - Jangan menyajikan isi `storage/` sebagai berkas statis publik.
 - Jangan menaruh rahasia di kode, dokumentasi, atau repositori. File `.env` tidak boleh dibagikan atau di-commit.
-- Jangan menambahkan JavaScript, Node.js, npm/pnpm, Vite, atau dependensi yang memerlukan JavaScript.
+- Gunakan JavaScript hanya untuk interaksi antarmuka yang diperlukan; jangan memindahkan validasi atau otorisasi dari server ke browser. Jangan menambahkan Node.js, npm/pnpm, Vite, atau dependensi build JavaScript.
